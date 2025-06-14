@@ -90,7 +90,7 @@ def distance_point_to_segment(point, p1, p2):
         distance = np.linalg.norm(point - projection)
     return distance
 
-def LevySearch3D(n, mu, lmax, D, TargetShape):
+def LevySearch3D(n_sources, initialization, n, mu, lmax, D, TargetShape):
     """
     Simulates a 3D Levy search for a target shape within a cubic environment.
     Detection occurs only at the end of each Levy step.
@@ -106,6 +106,7 @@ def LevySearch3D(n, mu, lmax, D, TargetShape):
         float: The total time (sum of Levy step lengths) until the target is found.
     """
     cube_side = n**(1/3)
+
     walker = np.array([random.uniform(0, cube_side),
                        random.uniform(0, cube_side),
                        random.uniform(0, cube_side)])
@@ -158,8 +159,79 @@ def LevySearch3D(n, mu, lmax, D, TargetShape):
                 abs(center[1] - walker[1]) < half_side_threshold and
                 abs(center[2] - walker[2]) < half_side_threshold):
                 found = True
+        
+        elif TargetShape == 'Disk':
+            if np.linalg.norm(walker[:2] - center[:2]) <= 0.5 * D + 1 and abs(walker[2] - center[2]) <= 1:
+                found = True
 
     return time
+
+def LevySearch3D_MultiWalker(n_walkers, initialization, n, mu, lmax, D, TargetShape):
+    cube_side = n**(1/3)
+    if initialization == 'independent':
+        walkers = np.array([[random.uniform(0, cube_side),
+                            random.uniform(0, cube_side),
+                            random.uniform(0, cube_side)] for _ in range(n_walkers)])
+    elif initialization == 'nest':
+        random_point = [random.uniform(0, cube_side), random.uniform(0, cube_side), random.uniform(0, cube_side)]
+        walkers = np.array([random_point for _ in range(n_walkers)])
+    center = np.array([cube_side * 0.5, cube_side * 0.5, cube_side * 0.5])
+    walker_times = np.zeros(n_walkers)
+    discovery_times = np.full(n_walkers, float('inf'))
+
+    min_found_time_so_far = float('inf') 
+    any_walker_found_target = False
+
+    while True:
+        min_found_time_so_far = np.min(discovery_times)
+        
+        if any_walker_found_target:
+            all_remaining_walkers_past_min_time = True
+            for i in range(n_walkers):
+                if discovery_times[i] == float('inf') and walker_times[i] < min_found_time_so_far:
+                    all_remaining_walkers_past_min_time = False
+                    break
+            
+            if all_remaining_walkers_past_min_time:
+                return min_found_time_so_far
+
+        for i in range(n_walkers):
+            l = Levy(mu, lmax)
+            walker_times[i] += l
+            theta = random.uniform(0, 2 * np.pi)
+            phi = random.uniform(0, np.pi)
+            direction = np.array([
+                np.sin(phi) * np.cos(theta),
+                np.sin(phi) * np.sin(theta),
+                np.cos(phi)
+            ])
+            walkers[i] += direction * l
+            walkers[i] %= cube_side
+
+            found_this_walker = False
+            if TargetShape == 'Ball':
+                if np.linalg.norm(walkers[i] - center) <= 0.5 * D + 1:
+                    found_this_walker = True
+            elif TargetShape == 'Line':
+                p1_line = np.array([center[0], center[1] - D / 2.0, center[2]])
+                p2_line = np.array([center[0], center[1] + D / 2.0, center[2]])
+                dist_to_line = distance_point_to_segment(walkers[i], p1_line, p2_line)
+                if dist_to_line <= 1:
+                    found_this_walker = True
+            elif TargetShape == 'Square':
+                half_side_threshold = D / (2 * np.sqrt(3)) + 1
+                if (abs(center[0] - walkers[i][0]) < half_side_threshold and
+                    abs(center[1] - walkers[i][1]) < half_side_threshold and
+                    abs(center[2] - walkers[i][2]) < half_side_threshold):
+                    found_this_walker = True
+            elif TargetShape == 'Disk':
+                if np.linalg.norm(walkers[i][:2] - center[:2]) <= 0.5 * D + 1 and abs(walkers[i][2] - center[2]) <= 1:
+                    found_this_walker = True
+            
+            if found_this_walker:
+                if discovery_times[i] == float('inf'):
+                    discovery_times[i] = walker_times[i]
+                    any_walker_found_target = True
 
 if __name__ == "__main__":
     ######COMPUTATIONS
