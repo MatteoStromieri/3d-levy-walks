@@ -14,7 +14,7 @@ range_lmax = [112, 150,
               1050,
               1200]
 # load data
-filehandler=open('data/HittingTimeLevyDifferentSizeTargetShapeCutOffProbaDetect-temp.obj','rb')
+filehandler=open('data/simulazioni_multiwalker_multitarget.obj','rb')
 TimesLevyProbaDetect=pickle.load(filehandler)
 filehandler.close()
 # setup
@@ -22,61 +22,92 @@ output_dir = 'Levy_Plots'
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
-"""
-p=1
-for TargetShape in ['Ball', 'Line']:
-    plt.figure()
-    CauchyRatio=dict()
-    Opt = dict()
-    rangeD=[0,1,2,4,8, 16]
-    for side in [32]:
-        n = 32**3
-        lmax=int(side/2)
-        for D in rangeD:
-            m=0
-            for mu in rangemu_LevyDistrib:
-                #Opt[(n,TargetShape,mu,lmax,D)]=np.average(TimesLevyProbaDetect[(n,mu,lmax,D,TargetShape,p)])
-                cauchy = np.average(TimesLevyProbaDetect[(n,2,lmax,D,TargetShape,p)])
-                CauchyRatio[(n,TargetShape,mu,lmax,D)]=np.average(TimesLevyProbaDetect[(n,mu,lmax,D,TargetShape,p)]) / cauchy
-            plt.plot(rangemu_LevyDistrib,[CauchyRatio[(n, TargetShape, mu, lmax, D)] for mu in rangemu_LevyDistrib],'-', label='D=%s'%D)
-            
-        plt.plot([1.0,3.0],[1,1], '-.k')
-        plt.legend()
+filehandler=open('data/simulazioni_linea.obj','rb')
+TimesLevyProbaDetect=pickle.load(filehandler)
+filehandler.close()
 
-        plt.xlabel('mu')
-        plt.ylabel('t_detect(X^mu)')
-        # Salva la figura
-        # Costruisci un nome file significativo
-        filename = os.path.join(output_dir, f'Levy_Performance_n{n}_cutoff{lmax}_{TargetShape}_D.png')
-        plt.savefig(filename)
-        plt.close() # Chiudi la figura per liberare memoria e non sovrapporre i plot
-    """
 
+# plot diametro d contro k figure di diametro D/k
 p=1
-mu = 2.0
-side = 32
 plt.figure()
-for TargetShape in ['Ball', 'Line']:
-    if TargetShape == 'Line':
-        filehandler=open('data/simulazioni_linea.obj','rb')
-        TimesLevyProbaDetect=pickle.load(filehandler)
-        filehandler.close()
-        
-    time = dict()
-    rangeD=[1,2,4,8, 16]
-    n = 32**3
-    lmax=int(side/2)
-        
-    plt.plot(rangeD,[np.average(TimesLevyProbaDetect[(n, mu, lmax, D, TargetShape, p)]) for D in rangeD],'-', label='%s'%TargetShape)
+rangeD=[0,1,2,4,8,16]
+n_targets = [1, 2, 4, 8]
+side = 32
+n = 32**3
+lmax=int(side/2)
+n_walkers = 1
+D = 8
+mu=2
+TargetShape = 'Ball'
+val = []
+for i,k in enumerate(n_targets):
+    val[i] = np.average(TimesLevyProbaDetect[(n_walkers, n, mu, lmax, D/k, TargetShape, k, p)])
+    
+plt.plot(n_targets, val,'-', label='D=%s'%D)
+            
+plt.plot([1.0,3.0],[1,1], '-.k')
+plt.legend()
 
+plt.xlabel('#targets')
+plt.ylabel('t_detect')
+# Salva la figura
+# Costruisci un nome file significativo
+filename = os.path.join(output_dir, f'multi_target.png')
+plt.savefig(filename)
+plt.close() # Chiudi la figura per liberare memoria e non sovrapporre i plot
+    
+# multi-agent vs one agent
+p=1
+plt.figure()
+n_targets = 1
+side = 32
+n = 32**3
+lmax=int(side/2)
+n_walkers = [1, 2, 4, 8, 16]
+D = 4
+mu=2
+TargetShape = 'Ball'
+val = []
+for i,k in enumerate(n_walkers):
+    val[i] = np.average(TimesLevyProbaDetect[(k, n, mu, lmax, D, TargetShape, n_targets, p)])
+    
+plt.plot(n_targets, val,'-', label='D=%s'%D)
+            
+plt.plot([1.0,3.0],[1,1], '-.k')
+plt.legend()
+
+plt.xlabel('#agents')
+plt.ylabel('t_detect')
+# Salva la figura
+# Costruisci un nome file significativo
+filename = os.path.join(output_dir, f'multi_agent.png')
+plt.savefig(filename)
+plt.close() # Chiudi la figura per liberare memoria e non sovrapporre i plot
+
+
+# line vs disk vs ball
+p=1
+plt.figure()
+rangeD=[0,1,2,4,8,16]
+n_targets = 1 #[1, 2, 4, 8]
+side = 32
+n = 32**3
+lmax=int(side/2)
+n_walkers = 1
+mu=2
+val = []
+for TargetShape in ['Line', 'Disk', 'Ball']:
+    for i,D in enumerate(rangeD):
+        val[i] = np.average(TimesLevyProbaDetect[(n_walkers, n, mu, lmax, D, TargetShape, n_targets, p)])
+    plt.plot(D, val,'-', label=TargetShape)
             
 plt.plot([1.0,3.0],[1,1], '-.k')
 plt.legend()
 
 plt.xlabel('D')
-plt.ylabel('t_detect(X^2)')
+plt.ylabel('t_detect')
 # Salva la figura
 # Costruisci un nome file significativo
-filename = os.path.join(output_dir, f'Ball_vs_Line.png')
+filename = os.path.join(output_dir, f'line_disk_ball.png')
 plt.savefig(filename)
 plt.close() # Chiudi la figura per liberare memoria e non sovrapporre i plot
