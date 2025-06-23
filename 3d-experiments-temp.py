@@ -3,9 +3,9 @@ import numpy as np
 import time
 import pickle
 
-##LÉVY DISTRIBUTION with exponent mu and cut-off lmax
+## LÉVY DISTRIBUTION with exponent mu and cut-off lmax
 
-rangemu_LevyDistrib = [round(1 + 0.1 * i, 2) for i in range(21)]
+rangemu_LevyDistrib = [round(1 + 0.2 * i, 2) for i in range(21)]
 range_lmax = [16, 112, 150,
               187,
               262,
@@ -15,23 +15,30 @@ range_lmax = [16, 112, 150,
               900,
               1050,
               1200]
+range_diam = [0, 1, 2, 4, 8, 16, 32, 64]
+range_side = [32, 64, 128, 256, 512]
+list_shapes = ['Ball', 'Line', 'Disk']
+range_nwalkers = [1, 2, 4, 8, 16]
+range_ntargets = [1, 2, 4, 8, 16]
 
+# --- Pre-calculation of normalization constant and expected length ---
 a = dict()
 ExpectedLength = dict()
-for lmax in range_lmax:
-    for mu in rangemu_LevyDistrib:
-        s = 0
-        for l in range(1, lmax): # Calcola la costante di normalizzazione per la distribuzione di Levy troncata
-            s += 1.0 / (l**mu)
-        a[(mu, lmax)] = s**(-1)  #########BEWARE NOW IT IS a[lmax,mu] and NOT a[n,mu]
-    for mu in rangemu_LevyDistrib:
-        s = 0
-        # Correzione: il ciclo qui dovrebbe iterare su tutte le possibili lunghezze di passo 'l'
-        # fino a 'lmax' per calcolare il valore atteso della lunghezza di passo.
-        for l_step in range(1, lmax): # 'l_step' rappresenta le singole lunghezze di passo
-            s += a[(mu, lmax)] * l_step / (l_step**mu) # E[L] = sum(l * P(l))
-        ExpectedLength[(mu, lmax)] = s
+for lmax_val in range_lmax:
+    for mu_val in rangemu_LevyDistrib:
+        sum_prob = 0
+        sum_expected_length = 0
+        # Include lmax_val in the loop if it represents the maximum valid length.
+        # Used range(1, lmax_val + 1) to include lmax_val.
+        for l_step in range(1, lmax_val + 1):
+            prob_density = 1.0 / (l_step**mu_val)
+            sum_prob += prob_density
+            sum_expected_length += l_step * prob_density
 
+        a[(mu_val, lmax_val)] = sum_prob**(-1)
+        ExpectedLength[(mu_val, lmax_val)] = a[(mu_val, lmax_val)] * sum_expected_length
+
+# --- Function to generate a Levy step ---
 def Levy(mu, lmax):
     """
     Generates a step length 'l' following a discretized Levy distribution
@@ -42,130 +49,61 @@ def Levy(mu, lmax):
     l = 0
     while s < x:
         l += 1
-        # In Python 3, / performs float division, so explicit float() is often not needed,
-        # but 1.0 ensures consistency if mu was an int and l**mu resulted in an int.
-        # Since mu is a float, l**mu will be a float, so division will be float.
+        # If l exceeds lmax, it should be handled based on the definition of the truncated distribution.
+        # Here, it's assumed that the distribution is only defined up to lmax.
+        if l > lmax: # Added a check to prevent infinite loops if x is close to 1 and lmax is small
+            return lmax
         s += a[(mu, lmax)] / (l**mu)
     return l
 
-def Levy_continuous(mu, lmax):
+# --- Functions for calculating toroidal distance ---
+def toroidal_distance_squared(p1, p2, side_length):
     """
-    Generates a step length 'l' following a continuous Levy distribution
-    with exponent 'mu' and a cut-off 'lmax'.
+    Calculates the squared minimum distance between two points on a 3D torus.
+    p1, p2: numpy arrays [x, y, z]
+    side_length: length of the side of the toroidal cube
     """
-    x = random.uniform(0, 1)
-    if mu == 1:
-        l = lmax ** x
-    else:
-        base = lmax**(1 - mu) - 1
-        l = (x * base + 1) ** (1 / (1 - mu))
-    return l
+    delta = np.abs(p1 - p2)
+    # Apply periodicity condition: min(direct_dist, side_length - direct_dist)
+    delta = np.minimum(delta, side_length - delta)
+    return np.sum(delta**2)
 
-# Intermittent Levy search (detection only in-between steps)
+def toroidal_distance(p1, p2, side_length):
+    """
+    Calculates the minimum distance between two points on a 3D torus.
+    """
+    return np.sqrt(toroidal_distance_squared(p1, p2, side_length))
 
-def distance_point_to_segment(point, p1, p2):
+# The distance_point_to_segment_euclidean function is for Euclidean space.
+# For a torus, the concept is more complex (periodic images).
+# For axis-aligned or point targets, we will use the toroidal_distance functions.
+# If TargetShape == 'Line' is a generic line, this function alone is not sufficient.
+# I've adapted the Line detection assuming it's centered and axis-aligned.
+def distance_point_to_segment_euclidean(point, p1, p2):
     """
-    Calcola la distanza più breve da un punto a un segmento di linea in 3D.
-    point: numpy array [x, y, z] del walker
-    p1: numpy array [x, y, z] del punto iniziale del segmento
-    p2: numpy array [x, y, z] del punto finale del segmento
+    Calculates the shortest distance from a point to a line segment in 3D (Euclidean space).
+    point: numpy array [x, y, z] of the walker
+    p1: numpy array [x, y, z] of the segment's start point
+    p2: numpy array [x, y, z] of the segment's end point
     """
-    if np.array_equal(p1, p2): # Caso degenere: il segmento è un punto
+    if np.array_equal(p1, p2): # Degenerate case: segment is a point
         return np.linalg.norm(point - p1)
 
-    v = p2 - p1 # Vettore del segmento P1P2
-    w = point - p1 # Vettore da P1 al punto
+    v = p2 - p1 # Vector of segment P1P2
+    w = point - p1 # Vector from P1 to the point
 
-    # Calcola il fattore di proiezione 't'
-    # t = dot(w, v) / dot(v, v)
     t = np.dot(w, v) / np.dot(v, v)
 
-    # Il punto più vicino sul segmento (o la sua estensione)
-    if t < 0.0: # La proiezione cade prima di P1
+    if t < 0.0: # Projection falls before P1
         distance = np.linalg.norm(point - p1)
-    elif t > 1.0: # La proiezione cade dopo P2
+    elif t > 1.0: # Projection falls after P2
         distance = np.linalg.norm(point - p2)
-    else: # La proiezione cade all'interno del segmento
+    else: # Projection falls within the segment
         projection = p1 + t * v
         distance = np.linalg.norm(point - projection)
     return distance
 
-def LevySearch3D(n_sources, initialization, n, mu, lmax, D, TargetShape):
-    """
-    Simulates a 3D Levy search for a target shape within a cubic environment.
-    Detection occurs only at the end of each Levy step.
-
-    Args:
-        n (int): Defines the size of the 3D cube (n^(1/3) is the side length).
-        mu (float): Exponent of the Levy distribution.
-        lmax (int): Cut-off length for Levy steps.
-        D (float): Diameter/size parameter for the target shape.
-        TargetShape (str): Type of target ('Ball', 'Line', 'Square').
-
-    Returns:
-        float: The total time (sum of Levy step lengths) until the target is found.
-    """
-    cube_side = n**(1/3)
-
-    walker = np.array([random.uniform(0, cube_side),
-                       random.uniform(0, cube_side),
-                       random.uniform(0, cube_side)])
-    center = np.array([cube_side * 0.5, cube_side * 0.5, cube_side * 0.5])
-
-    time = 0
-    found = False
-
-    while not found:
-        l = Levy(mu, lmax)
-
-        # Coordinate sferiche per direzione 3D
-        theta = random.uniform(0, 2 * np.pi)  # angolo azimutale [0, 2pi]
-        phi = random.uniform(0, np.pi)        # angolo polare [0, pi]
-
-        direction = np.array([
-            np.sin(phi) * np.cos(theta),
-            np.sin(phi) * np.sin(theta),
-            np.cos(phi)
-        ])
-
-        walker += direction * l
-        walker %= cube_side      # toro 3D
-
-        time += l
-
-        if TargetShape == 'Ball':
-            # distanza euclidea 3D dal centro
-            if np.linalg.norm(walker - center) <= 0.5 * D + 1:
-                found = True
-
-        elif TargetShape == 'Line':
-            # Assumiamo una linea centrata lungo l'asse Y
-            p1_line = np.array([center[0], center[1] - D / 2.0, center[2]])
-            p2_line = np.array([center[0], center[1] + D / 2.0, center[2]])
-
-            # Calcola la distanza dal walker al segmento di linea
-            dist_to_line = distance_point_to_segment(walker, p1_line, p2_line)
-
-            # Se la distanza è minore della tolleranza, il target è rilevato
-            if dist_to_line <= 1:
-                found = True
-
-        elif TargetShape == 'Square':
-            # ora un cubo (ipercubo 3D) centrato
-            # Note: For a square, D/2*sqrt(3) might be for a specific relation to an inscribed sphere.
-            # Assuming 'Square' actually means a cube here, given it's 3D and compares all 3 axes.
-            half_side_threshold = D / (2 * np.sqrt(3)) + 1
-            if (abs(center[0] - walker[0]) < half_side_threshold and
-                abs(center[1] - walker[1]) < half_side_threshold and
-                abs(center[2] - walker[2]) < half_side_threshold):
-                found = True
-        
-        elif TargetShape == 'Disk':
-            if np.linalg.norm(walker[:2] - center[:2]) <= 0.5 * D + 1 and abs(walker[2] - center[2]) <= 1:
-                found = True
-
-    return time
-
+# --- Multi-walker and multi-target search function ---
 def LevySearch3D_MultiWalker(n_walkers, initialization, n, mu, lmax, D, TargetShape, num_targets_to_generate):
     cube_side = n**(1/3)
     
@@ -173,36 +111,47 @@ def LevySearch3D_MultiWalker(n_walkers, initialization, n, mu, lmax, D, TargetSh
         walkers = np.array([[random.uniform(0, cube_side),
                              random.uniform(0, cube_side),
                              random.uniform(0, cube_side)] for _ in range(n_walkers)])
-    elif initialization == 'nest':
-        random_point = [random.uniform(0, cube_side), random.uniform(0, cube_side), random.uniform(0, cube_side)]
-        walkers = np.array([random_point for _ in range(n_walkers)])
+    elif initialization == 'nest': # All walkers start from the same random point
+        random_point = np.array([random.uniform(0, cube_side),
+                                 random.uniform(0, cube_side),
+                                 random.uniform(0, cube_side)])
+        walkers = np.array([random_point.copy() for _ in range(n_walkers)]) # Use .copy() to avoid references to the same array
     
     target_positions = np.array([[random.uniform(0, cube_side),
                                   random.uniform(0, cube_side),
                                   random.uniform(0, cube_side)] for _ in range(num_targets_to_generate)])
 
-    walker_times = np.zeros(n_walkers)
-    discovery_times = np.full(n_walkers, float('inf')) 
+    walker_times = np.zeros(n_walkers) # Accumulated time for each walker
+    discovery_times = np.full(n_walkers, float('inf')) # Discovery time for each walker, initialized to infinity
 
-    min_found_time_so_far = float('inf') 
     any_walker_found_target = False
 
     while True:
-        min_found_time_so_far = np.min(discovery_times)
-        
+        min_overall_discovery_time = np.min(discovery_times) # The lowest discovery time among all walkers so far
+
+        # Termination criterion: If at least one walker has found the target
+        # AND all other walkers that haven't found the target yet have
+        # a cumulative time already greater than the minimum discovery time.
         if any_walker_found_target:
             all_remaining_walkers_past_min_time = True
             for i in range(n_walkers):
-                if discovery_times[i] == float('inf') and walker_times[i] < min_found_time_so_far:
+                if discovery_times[i] == float('inf') and walker_times[i] < min_overall_discovery_time:
                     all_remaining_walkers_past_min_time = False
                     break
             
             if all_remaining_walkers_past_min_time:
-                return min_found_time_so_far
+                return min_overall_discovery_time # Returns the time of the first detection
 
         for i in range(n_walkers):
+            # If this walker has already found the target and its discovery time is recorded,
+            # or if its cumulative time has already exceeded the minimum discovery time,
+            # there's no point in making it walk further in this loop to find the *first* target.
+            if discovery_times[i] != float('inf') and walker_times[i] >= min_overall_discovery_time:
+                continue # This walker has already contributed to the minimum time or is too slow
+
             l = Levy(mu, lmax)
             walker_times[i] += l
+            
             theta = random.uniform(0, 2 * np.pi)
             phi = random.uniform(0, np.pi)
             direction = np.array([
@@ -210,104 +159,126 @@ def LevySearch3D_MultiWalker(n_walkers, initialization, n, mu, lmax, D, TargetSh
                 np.sin(phi) * np.sin(theta),
                 np.cos(phi)
             ])
+            
             walkers[i] += direction * l
-            walkers[i] %= cube_side
+            walkers[i] %= cube_side # Apply toroidal boundary conditions
 
             found_this_walker_in_this_step = False
             
+            # Target detection check for each target
             for target_center in target_positions:
                 if TargetShape == 'Ball':
-                    if np.linalg.norm(walkers[i] - target_center) <= 0.5 * D + 1:
+                    # Use toroidal distance
+                    if toroidal_distance(walkers[i], target_center, cube_side) <= 0.5 * D + 1:
                         found_this_walker_in_this_step = True
                         break
+                
                 elif TargetShape == 'Line':
-                    p1_line = np.array([target_center[0], target_center[1] - D / 2.0, target_center[2]])
-                    p2_line = np.array([target_center[0], target_center[1] + D / 2.0, target_center[2]])
-                    dist_to_line = distance_point_to_segment(walkers[i], p1_line, p2_line)
-                    if dist_to_line <= 1:
+                    # Assume a line centered along the Y-axis for simpler toroidal distance.
+                    # D is the length of the line.
+                    # Calculate the toroidal distance in X and Z dimensions relative to the line's center.
+                    dx_torus = np.minimum(np.abs(walkers[i][0] - target_center[0]), cube_side - np.abs(walkers[i][0] - target_center[0]))
+                    dz_torus = np.minimum(np.abs(walkers[i][2] - target_center[2]), cube_side - np.abs(walkers[i][2] - target_center[2]))
+                    
+                    # For the Y-coordinate, consider the Euclidean distance from the line segment.
+                    # If the line is very long and could wrap around the torus, this part would be more complex.
+                    # For a "local" (non-wrapping) line, Euclidean distance along the line's axis is fine.
+                    # Here, we use Euclidean distance for the y-part relative to the segment.
+                    p1_line_y = target_center[1] - D / 2.0
+                    p2_line_y = target_center[1] + D / 2.0
+                    
+                    # Find the closest point along the Y-projection of the segment
+                    closest_y = max(p1_line_y, min(walkers[i][1], p2_line_y))
+                    dy = walkers[i][1] - closest_y
+
+                    # The overall distance is the square root of the sum of squared minimum distances
+                    dist_to_line_torus_squared = dx_torus**2 + dy**2 + dz_torus**2
+                    
+                    if np.sqrt(dist_to_line_torus_squared) <= 1: # Tolerance of 1
                         found_this_walker_in_this_step = True
                         break
-                elif TargetShape == 'Square':
-                    half_side_threshold = D / (2 * np.sqrt(3)) + 1
-                    if (abs(target_center[0] - walkers[i][0]) < half_side_threshold and
-                        abs(target_center[1] - walkers[i][1]) < half_side_threshold and
-                        abs(target_center[2] - walkers[i][2]) < half_side_threshold):
+
+                elif TargetShape == 'Square': # Intended as an axis-aligned Cube
+                    # D is interpreted as the side length of the cube.
+                    half_side_target = D / 2.0 + 1 # Your effective detection radius (D/2 + tolerance)
+                    
+                    # Calculate the toroidal difference for each axis
+                    delta_x = np.minimum(np.abs(target_center[0] - walkers[i][0]), cube_side - np.abs(target_center[0] - walkers[i][0]))
+                    delta_y = np.minimum(np.abs(target_center[1] - walkers[i][1]), cube_side - np.abs(target_center[1] - walkers[i][1]))
+                    delta_z = np.minimum(np.abs(target_center[2] - walkers[i][2]), cube_side - np.abs(target_center[2] - walkers[i][2]))
+
+                    # Check if the walker is inside the toroidal "detection cube"
+                    if (delta_x < half_side_target and
+                        delta_y < half_side_target and
+                        delta_z < half_side_target):
                         found_this_walker_in_this_step = True
                         break
+                
                 elif TargetShape == 'Disk':
-                    if np.linalg.norm(walkers[i][:2] - target_center[:2]) <= 0.5 * D + 1 and \
-                       abs(walkers[i][2] - target_center[2]) <= 1:
+                    # Toroidal distance for XY coordinates, toroidal distance for Z.
+                    # Assumes a disk parallel to the XY plane, centered at target_center.
+                    
+                    # Distance in the XY plane (toroidal)
+                    dist_xy_squared = toroidal_distance_squared(walkers[i][:2], target_center[:2], cube_side)
+                    dist_xy = np.sqrt(dist_xy_squared)
+
+                    # Distance along the Z axis (toroidal)
+                    dist_z = np.minimum(np.abs(walkers[i][2] - target_center[2]), cube_side - np.abs(walkers[i][2] - target_center[2]))
+
+                    if dist_xy <= 0.5 * D + 1 and dist_z <= 1: # D is the disk diameter, 1 is Z tolerance
                         found_this_walker_in_this_step = True
                         break
             
             if found_this_walker_in_this_step:
-                if discovery_times[i] == float('inf'):
+                if discovery_times[i] == float('inf'): # Only record the first discovery for this walker
                     discovery_times[i] = walker_times[i]
                     any_walker_found_target = True
 
 
 if __name__ == "__main__":
-    ######COMPUTATIONS
+    ###### COMPUTATIONS
 
-    print("##FIGURE 3: n=300**3")
+    print("## Starting Levy Search Simulations on 3D Torus")
     TimesLevyProbaDetect = dict()
 
-    start = time.time()
-    for side in [32]: #[32, 300]
-        n = side**3
+    start_total_time = time.time()
+    
+    num_trials_per_config = 100 # Number of simulations to run for each parameter combination
 
+    # Reorganizing loops to run multiple trials for each configuration
+    for side in range_side:
+        n = side**3 # Volume of the toroidal cube
+        lmax_current = side / 2 # Lmax proportional to the cube side
 
-        tests = 0
-        while tests < 1000:
-            if tests == 10 or tests == 100: #evaluate how much time the task will require to complete
-                # Changed print statement syntax for Python 3
-                print(str(tests) + ' tests, total ' + str((time.time() - start) / 60.0) + ' minutes')
-            tests += 1
-
-            for lmax in [side/2]: # lmax_range
-                for TargetShape in ['Line']: # Original code commented out ['Ball','Line','Square']
-                    for D in [0, 1, 2, 4, 8, 16]:
+        for TargetShape in list_shapes:
+            for D in range_diam:
+                for n_targets in range_ntargets:
+                    for n_walkers in range_nwalkers:
                         for mu in rangemu_LevyDistrib:
-                            for p in [1]: # [0, 0.1, 1]
-                                if (n, mu, lmax, D, TargetShape, p) not in TimesLevyProbaDetect:
-                                    TimesLevyProbaDetect[(n, mu, lmax, D, TargetShape, p)] = []
-                                # Corrected function call from LevySearch to LevySearchProbaDetect3D
-                                # and added the 'p' argument, as it's iterated over.
-                                TimesLevyProbaDetect[(n, mu, lmax, D, TargetShape, p)].append(
-                                    LevySearch3D(n, mu, lmax, D, TargetShape))
-    end = time.time()
-    # Changed print statement syntax for Python 3
-    print((end - start) / 60.0)
-"""
-    ##FIGURE 4: influence of the cut-off lmax
-    print("##FIGURE 4: influence of the cut-off lmax")
+                            # 'p' was removed from parameters as it was not used
+                            
+                            config_key = (n_walkers, n, mu, lmax_current, D, TargetShape, n_targets)
+                            
+                            if config_key not in TimesLevyProbaDetect:
+                                TimesLevyProbaDetect[config_key] = []
 
-    start = time.time()
-    for side in [300]:
-        n = side**3
-        l_medium = int(0.5 * side)
-        tests = 0
+                            print(f"\nSimulating Config: Side={side}, Shape={TargetShape}, D={D}, Targets={n_targets}, Walkers={n_walkers}, Mu={mu}")
+                            
+                            for trial in range(num_trials_per_config):
+                                # Using 'nest' as initialization, as specified in your original code
+                                detection_time = LevySearch3D_MultiWalker(n_walkers, 'nest', n, mu, lmax_current, D, TargetShape, n_targets)
+                                TimesLevyProbaDetect[config_key].append(detection_time)
+                                
+                                # Print occasional progress
+                                if (trial + 1) % 10 == 0 or trial == num_trials_per_config - 1:
+                                    print(f"  Trial {trial + 1}/{num_trials_per_config} completed. Last time: {detection_time:.2f}")
 
-        while tests < 1000:
-            if tests == 10 or tests == 100: #evaluate how much time the task will require to complete
-                print(str(tests) + ' tests, total ' + str((time.time() - start) / 60.0) + ' minutes')
-            tests += 1
+    end_total_time = time.time()
+    print(f"\nTotal simulation time: {(end_total_time - start_total_time) / 60.0:.2f} minutes")
 
-            for lmax_val in range_lmax:
-                for TargetShape in ['Ball']: # Original code commented out ['Ball','Line','Square']
-                    for D in [0, 2, 4, 8, 16]:
-                        for mu in [2.0]:
-                            # p is hardcoded to 0 in this new block, so using LevySearch3D
-                            # which does not take 'p' as an argument.
-                            if (n, mu, lmax_val, D, TargetShape, 0) not in TimesLevyProbaDetect:
-                                TimesLevyProbaDetect[(n, mu, lmax_val, D, TargetShape, 0)] = []
-                            print(TimesLevyProbaDetect)
-                            TimesLevyProbaDetect[(n, mu, lmax_val, D, TargetShape, 0)].append(
-                                LevySearch3D(n, mu, lmax_val, D, TargetShape))
-    end = time.time()
-    print((end - start) / 60.0)
-"""
 # save
-filehandler=open('simulazioni_linea.obj','wb')
+print("Saving results...")
+filehandler = open('simulazioni_multiwalker_multitarget_toroidal.obj','wb')
 pickle.dump(TimesLevyProbaDetect,filehandler)
 filehandler.close()
+print("Save complete.")
