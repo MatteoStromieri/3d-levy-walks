@@ -96,9 +96,9 @@ double LevySearch3D_MultiWalker(int n_walkers, const char* initialization, doubl
         }
     } else if (strcmp(initialization, "nest") == 0) {
         double random_point[3];
-        random_point[0] = (double)rand() / RAND_MAX * cube_side;
-        random_point[1] = (double)rand() / RAND_MAX * cube_side;
-        random_point[2] = (double)rand() / RAND_MAX * cube_side;
+        random_point[0] = (double) 0;
+        random_point[1] = (double) 0;
+        random_point[2] = (double) 0;
         for (int i = 0; i < n_walkers; ++i) {
             walkers[i][0] = random_point[0];
             walkers[i][1] = random_point[1];
